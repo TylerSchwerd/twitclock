@@ -1,0 +1,65 @@
+name: Build Windows executables
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore TwitClock.sln
+
+      - name: Build
+        run: dotnet build TwitClock.sln --configuration Release --no-restore
+
+      - name: Run timer logic tests
+        run: dotnet run --project tests/TwitClock.Core.Tests/TwitClock.Core.Tests.csproj --configuration Release --no-build
+
+  publish:
+    name: Publish ${{ matrix.runtime }}
+    needs: test
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime:
+          - win-x64
+          - win-arm64
+          - win-x86
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish self-contained executable
+        shell: pwsh
+        run: ./build.ps1 -RuntimeIdentifier ${{ matrix.runtime }}
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: TwitClock-${{ matrix.runtime }}
+          path: artifacts/${{ matrix.runtime }}/TwitClock.exe
+          if-no-files-found: error
