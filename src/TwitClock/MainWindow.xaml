@@ -1,0 +1,180 @@
+<Window x:Class="TwitClock.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
+        Title="TwitClock"
+        Width="270"
+        Height="145"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="True"
+        WindowStartupLocation="CenterScreen"
+        Focusable="True"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Display"
+        Loaded="Window_Loaded"
+        Activated="Window_Activated"
+        PreviewKeyDown="Window_PreviewKeyDown">
+    <Window.Resources>
+        <Style x:Key="RoundButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontFamily" Value="Segoe UI Symbol" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonSurface"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="14">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.90" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.72" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SplitButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontFamily" Value="Consolas" />
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonSurface" Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="Background" Value="#16000000" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="Background" Value="#2B000000" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Border x:Name="RootBorder"
+            CornerRadius="12"
+            MouseLeftButtonDown="RootBorder_MouseLeftButtonDown">
+        <Border.Background>
+            <SolidColorBrush Color="#21C45E" />
+        </Border.Background>
+
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="36" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Margin="20,8,20,3">
+                <TextBlock x:Name="TimeText"
+                           Text="15:00"
+                           FontFamily="Consolas"
+                           FontSize="48"
+                           FontWeight="Bold"
+                           Foreground="White"
+                           LineHeight="51"
+                           TextAlignment="Center" />
+                <TextBlock x:Name="PhaseText"
+                           Text="CONTENT"
+                           FontFamily="Segoe UI"
+                           FontSize="16"
+                           FontWeight="SemiBold"
+                           Foreground="#E6FFFFFF"
+                           TextAlignment="Center" />
+            </StackPanel>
+
+            <StackPanel Grid.Row="1"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Top">
+                <Border Width="92"
+                        Height="26"
+                        Background="White"
+                        CornerRadius="13">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="1" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Button Grid.Column="0"
+                                Style="{StaticResource SplitButtonStyle}"
+                                Foreground="{Binding Background, ElementName=RootBorder}"
+                                Content="+"
+                                ToolTip="Add one minute"
+                                automation:AutomationProperties.Name="Add one minute"
+                                Click="AddMinute_Click" />
+                        <Border Grid.Column="1"
+                                Width="1"
+                                Height="12"
+                                Background="#33000000"
+                                VerticalAlignment="Center" />
+                        <Button Grid.Column="2"
+                                Style="{StaticResource SplitButtonStyle}"
+                                Foreground="{Binding Background, ElementName=RootBorder}"
+                                Content="−"
+                                ToolTip="Subtract one minute"
+                                automation:AutomationProperties.Name="Subtract one minute"
+                                Click="SubtractMinute_Click" />
+                    </Grid>
+                </Border>
+
+                <Button Width="62"
+                        Height="26"
+                        Margin="8,0,0,0"
+                        Style="{StaticResource RoundButtonStyle}"
+                        Foreground="{Binding Background, ElementName=RootBorder}"
+                        Content="⇄"
+                        ToolTip="Switch phase"
+                        automation:AutomationProperties.Name="Switch phase"
+                        Click="SwitchPhase_Click" />
+
+                <Button Width="44"
+                        Height="26"
+                        Margin="8,0,0,0"
+                        Style="{StaticResource RoundButtonStyle}"
+                        Foreground="{Binding Background, ElementName=RootBorder}"
+                        Content="×"
+                        ToolTip="Close TwitClock"
+                        automation:AutomationProperties.Name="Close TwitClock"
+                        Click="Close_Click" />
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

@@ -1,2 +1,9 @@
-.build/
-TwitClock.app/
+bin/
+obj/
+artifacts/
+TestResults/
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
