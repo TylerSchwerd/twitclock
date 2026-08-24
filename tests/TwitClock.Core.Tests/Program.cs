@@ -9,7 +9,7 @@ internal static class Program
     private static int Main()
     {
         Run("Starts with a fifteen-minute content phase", StartsWithContentPhase);
-        Run("Counts down using elapsed time", CountsDown);
+        Run("Counts down using monotonic elapsed time", CountsDown);
         Run("Switches to a ninety-second ad break", SwitchesToAdBreak);
         Run("Automatically advances when time expires", AdvancesWhenExpired);
         Run("Adjusts the remaining time by one minute", AdjustsTime);
@@ -25,65 +25,65 @@ internal static class Program
 
     private static void StartsWithContentPhase()
     {
-        DateTimeOffset now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
-        PhaseClock clock = new(now);
+        TimeSpan elapsed = TimeSpan.FromHours(12);
+        PhaseClock clock = new(elapsed);
 
         Equal(ClockPhase.Content, clock.Phase);
-        Equal(900, clock.GetRemainingSeconds(now));
+        Equal(900, clock.GetRemainingSeconds(elapsed));
     }
 
     private static void CountsDown()
     {
-        DateTimeOffset now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
-        PhaseClock clock = new(now);
+        TimeSpan elapsed = TimeSpan.FromDays(20);
+        PhaseClock clock = new(elapsed);
 
-        Equal(899, clock.GetRemainingSeconds(now.AddSeconds(1)));
-        Equal(1, clock.GetRemainingSeconds(now.AddMilliseconds(899_100)));
-        Equal(0, clock.GetRemainingSeconds(now.AddMinutes(15)));
+        Equal(899, clock.GetRemainingSeconds(elapsed.Add(TimeSpan.FromSeconds(1))));
+        Equal(1, clock.GetRemainingSeconds(elapsed.Add(TimeSpan.FromMilliseconds(899_100))));
+        Equal(0, clock.GetRemainingSeconds(elapsed.Add(TimeSpan.FromMinutes(15))));
     }
 
     private static void SwitchesToAdBreak()
     {
-        DateTimeOffset now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
-        PhaseClock clock = new(now);
+        TimeSpan elapsed = TimeSpan.FromHours(12);
+        PhaseClock clock = new(elapsed);
 
-        clock.SwitchPhase(now);
+        clock.SwitchPhase(elapsed);
 
         Equal(ClockPhase.AdBreak, clock.Phase);
-        Equal(90, clock.GetRemainingSeconds(now));
+        Equal(90, clock.GetRemainingSeconds(elapsed));
     }
 
     private static void AdvancesWhenExpired()
     {
-        DateTimeOffset now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
-        PhaseClock clock = new(now);
+        TimeSpan elapsed = TimeSpan.FromHours(12);
+        PhaseClock clock = new(elapsed);
 
-        Equal(false, clock.AdvanceIfExpired(now.AddSeconds(899)));
-        Equal(true, clock.AdvanceIfExpired(now.AddSeconds(900)));
+        Equal(false, clock.AdvanceIfExpired(elapsed.Add(TimeSpan.FromSeconds(899))));
+        Equal(true, clock.AdvanceIfExpired(elapsed.Add(TimeSpan.FromSeconds(900))));
         Equal(ClockPhase.AdBreak, clock.Phase);
-        Equal(90, clock.GetRemainingSeconds(now.AddSeconds(900)));
+        Equal(90, clock.GetRemainingSeconds(elapsed.Add(TimeSpan.FromSeconds(900))));
     }
 
     private static void AdjustsTime()
     {
-        DateTimeOffset now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
-        PhaseClock clock = new(now);
+        TimeSpan elapsed = TimeSpan.FromHours(12);
+        PhaseClock clock = new(elapsed);
 
-        clock.Adjust(TimeSpan.FromMinutes(1), now);
-        Equal(960, clock.GetRemainingSeconds(now));
+        clock.Adjust(TimeSpan.FromMinutes(1), elapsed);
+        Equal(960, clock.GetRemainingSeconds(elapsed));
 
-        clock.Adjust(TimeSpan.FromMinutes(-1), now);
-        Equal(900, clock.GetRemainingSeconds(now));
+        clock.Adjust(TimeSpan.FromMinutes(-1), elapsed);
+        Equal(900, clock.GetRemainingSeconds(elapsed));
     }
 
     private static void ClampsAtZero()
     {
-        DateTimeOffset now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
-        PhaseClock clock = new(now);
+        TimeSpan elapsed = TimeSpan.FromHours(12);
+        PhaseClock clock = new(elapsed);
 
-        clock.Adjust(TimeSpan.FromHours(-1), now);
+        clock.Adjust(TimeSpan.FromHours(-1), elapsed);
 
-        Equal(0, clock.GetRemainingSeconds(now));
+        Equal(0, clock.GetRemainingSeconds(elapsed));
     }
 
     private static void Run(string name, Action test)

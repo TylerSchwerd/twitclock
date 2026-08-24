@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -13,14 +14,17 @@ public partial class MainWindow : Window
     private static readonly Color ContentGreen = Color.FromRgb(33, 196, 94);
     private static readonly Color AdBreakRed = Color.FromRgb(240, 69, 69);
 
+    private readonly Stopwatch _stopwatch;
     private readonly PhaseClock _clock;
     private readonly DispatcherTimer _timer;
+    private ClockPhase? _displayedPhase;
 
     public MainWindow()
     {
         InitializeComponent();
 
-        _clock = new PhaseClock(DateTimeOffset.UtcNow);
+        _stopwatch = Stopwatch.StartNew();
+        _clock = new PhaseClock(_stopwatch.Elapsed);
         _timer = new DispatcherTimer(DispatcherPriority.Normal)
         {
             Interval = TimeSpan.FromMilliseconds(200)
@@ -29,14 +33,13 @@ public partial class MainWindow : Window
         _timer.Tick += Timer_Tick;
         _timer.Start();
 
-        UpdateInterface(animateBackground: false);
+        UpdateInterface();
     }
 
     private void Timer_Tick(object? sender, EventArgs e)
     {
-        DateTimeOffset nowUtc = DateTimeOffset.UtcNow;
-        bool phaseChanged = _clock.AdvanceIfExpired(nowUtc);
-        UpdateInterface(animateBackground: phaseChanged);
+        _clock.AdvanceIfExpired(_stopwatch.Elapsed);
+        UpdateInterface();
     }
 
     private void AddMinute_Click(object sender, RoutedEventArgs e)
@@ -120,27 +123,34 @@ public partial class MainWindow : Window
 
     private void AdjustByOneMinute(int direction)
     {
-        _clock.Adjust(TimeSpan.FromMinutes(direction), DateTimeOffset.UtcNow);
-        UpdateInterface(animateBackground: false);
+        _clock.Adjust(TimeSpan.FromMinutes(direction), _stopwatch.Elapsed);
+        UpdateInterface();
     }
 
     private void SwitchPhase()
     {
-        _clock.SwitchPhase(DateTimeOffset.UtcNow);
-        UpdateInterface(animateBackground: true);
+        _clock.SwitchPhase(_stopwatch.Elapsed);
+        UpdateInterface();
     }
 
-    private void UpdateInterface(bool animateBackground)
+    private void UpdateInterface()
     {
-        int secondsRemaining = _clock.GetRemainingSeconds(DateTimeOffset.UtcNow);
+        TimeSpan elapsed = _stopwatch.Elapsed;
+        int secondsRemaining = _clock.GetRemainingSeconds(elapsed);
         int minutes = secondsRemaining / 60;
         int seconds = secondsRemaining % 60;
 
         TimeText.Text = $"{minutes:00}:{seconds:00}";
         PhaseText.Text = _clock.Phase == ClockPhase.Content ? "CONTENT" : "AD BREAK";
 
-        Color phaseColor = _clock.Phase == ClockPhase.Content ? ContentGreen : AdBreakRed;
-        SetBackground(phaseColor, animateBackground);
+        bool animateBackground = _displayedPhase.HasValue && _displayedPhase.Value != _clock.Phase;
+        if (!_displayedPhase.HasValue || animateBackground)
+        {
+            Color phaseColor = _clock.Phase == ClockPhase.Content ? ContentGreen : AdBreakRed;
+            SetBackground(phaseColor, animateBackground);
+        }
+
+        _displayedPhase = _clock.Phase;
     }
 
     private void SetBackground(Color color, bool animate)
