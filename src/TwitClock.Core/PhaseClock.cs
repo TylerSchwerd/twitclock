@@ -5,47 +5,47 @@ public sealed class PhaseClock
     public static readonly TimeSpan ContentDuration = TimeSpan.FromMinutes(15);
     public static readonly TimeSpan AdBreakDuration = TimeSpan.FromSeconds(90);
 
-    public PhaseClock(DateTimeOffset nowUtc)
+    public PhaseClock(TimeSpan elapsed)
     {
         Phase = ClockPhase.Content;
-        EndsAtUtc = nowUtc + ContentDuration;
+        EndsAtElapsed = elapsed + ContentDuration;
     }
 
     public ClockPhase Phase { get; private set; }
 
-    public DateTimeOffset EndsAtUtc { get; private set; }
+    public TimeSpan EndsAtElapsed { get; private set; }
 
-    public int GetRemainingSeconds(DateTimeOffset nowUtc)
+    public int GetRemainingSeconds(TimeSpan elapsed)
     {
-        double seconds = (EndsAtUtc - nowUtc).TotalSeconds;
+        double seconds = (EndsAtElapsed - elapsed).TotalSeconds;
         return seconds <= 0 ? 0 : (int)Math.Ceiling(seconds);
     }
 
-    public bool AdvanceIfExpired(DateTimeOffset nowUtc)
+    public bool AdvanceIfExpired(TimeSpan elapsed)
     {
-        if (nowUtc < EndsAtUtc)
+        if (elapsed < EndsAtElapsed)
         {
             return false;
         }
 
-        SwitchPhase(nowUtc);
+        SwitchPhase(elapsed);
         return true;
     }
 
-    public void SwitchPhase(DateTimeOffset nowUtc)
+    public void SwitchPhase(TimeSpan elapsed)
     {
         Phase = Phase == ClockPhase.Content
             ? ClockPhase.AdBreak
             : ClockPhase.Content;
 
-        EndsAtUtc = nowUtc + GetDuration(Phase);
+        EndsAtElapsed = elapsed + GetDuration(Phase);
     }
 
-    public void Adjust(TimeSpan adjustment, DateTimeOffset nowUtc)
+    public void Adjust(TimeSpan adjustment, TimeSpan elapsed)
     {
-        DateTimeOffset baseline = EndsAtUtc < nowUtc ? nowUtc : EndsAtUtc;
-        DateTimeOffset adjustedEnd = baseline + adjustment;
-        EndsAtUtc = adjustedEnd < nowUtc ? nowUtc : adjustedEnd;
+        TimeSpan baseline = EndsAtElapsed < elapsed ? elapsed : EndsAtElapsed;
+        TimeSpan adjustedEnd = baseline + adjustment;
+        EndsAtElapsed = adjustedEnd < elapsed ? elapsed : adjustedEnd;
     }
 
     private static TimeSpan GetDuration(ClockPhase phase)
