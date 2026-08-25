@@ -71,8 +71,33 @@ jobs:
           New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
 
           foreach ($runtime in @("win-x64", "win-arm64", "win-x86")) {
-              ./build.ps1 -RuntimeIdentifier $runtime -Version $env:RELEASE_VERSION
-              Copy-Item "artifacts/$runtime/TwitClock.exe" "$releaseDirectory/TwitClock-$runtime.exe"
+              $runtimeDirectory = Join-Path $PWD "artifacts/$runtime"
+              $publishArguments = @(
+                  "publish"
+                  "src/TwitClock/TwitClock.csproj"
+                  "--configuration"
+                  "Release"
+                  "--runtime"
+                  $runtime
+                  "--self-contained"
+                  "true"
+                  "-p:PublishSingleFile=true"
+                  "-p:IncludeNativeLibrariesForSelfExtract=true"
+                  "-p:DebugType=None"
+                  "-p:DebugSymbols=false"
+                  "-p:Version=$env:RELEASE_VERSION"
+                  "-p:AssemblyVersion=$($env:RELEASE_VERSION).0"
+                  "-p:FileVersion=$($env:RELEASE_VERSION).0"
+                  "--output"
+                  $runtimeDirectory
+              )
+
+              & dotnet @publishArguments
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Publishing TwitClock for $runtime failed with exit code $LASTEXITCODE."
+              }
+
+              Copy-Item "$runtimeDirectory/TwitClock.exe" "$releaseDirectory/TwitClock-$runtime.exe"
           }
 
       - name: Sign release executables
@@ -207,6 +232,8 @@ jobs:
               "The Windows executables are currently unsigned and may trigger Microsoft Defender SmartScreen."
           }
 
+          $releaseMarker = "<!-- twitclock-release-run:$env:GITHUB_RUN_ID:$env:GITHUB_RUN_ATTEMPT -->"
+
           @"
           Self-contained TwitClock executables for Windows 10 and Windows 11. A separate .NET installation is not required.
 
@@ -216,6 +243,8 @@ jobs:
           - ``SHA256SUMS.txt``: SHA-256 checksums for verifying downloads
 
           $signatureNote
+
+          $releaseMarker
           "@ | Set-Content "release-notes.md"
 
           $assets = (Get-ChildItem "release-assets\*").FullName
@@ -263,29 +292,60 @@ jobs:
           }
           catch {
               $releaseFailure = $_
+              $cleanupReleaseId = $createdReleaseId
 
-              if ($null -ne $createdReleaseId -and -not $published) {
+              if ($null -eq $cleanupReleaseId) {
+                  $releasePagesJson = & gh api `
+                      --paginate `
+                      --slurp `
+                      "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" `
+                      2>$null
+
+                  if ($LASTEXITCODE -eq 0) {
+                      $releasePages = $releasePagesJson | ConvertFrom-Json
+                      $matchingDrafts = @(
+                          foreach ($page in $releasePages) {
+                              foreach ($release in $page) {
+                                  if (
+                                      $release.draft -and `
+                                      $release.tag_name -eq $env:RELEASE_TAG -and `
+                                      $release.body -like "*$releaseMarker*"
+                                  ) {
+                                      $release
+                                  }
+                              }
+                          }
+                      )
+
+                      if ($matchingDrafts.Count -eq 1) {
+                          $cleanupReleaseId = [long]$matchingDrafts[0].id
+                      }
+                  }
+              }
+
+              if ($null -ne $cleanupReleaseId -and -not $published) {
                   $releaseStateJson = & gh api `
-                      "repos/$env:GITHUB_REPOSITORY/releases/$createdReleaseId" `
+                      "repos/$env:GITHUB_REPOSITORY/releases/$cleanupReleaseId" `
                       2>$null
 
                   if ($LASTEXITCODE -eq 0) {
                       $releaseState = $releaseStateJson | ConvertFrom-Json
                       $isCreatedDraft = `
-                          [long]$releaseState.id -eq $createdReleaseId -and `
+                          [long]$releaseState.id -eq $cleanupReleaseId -and `
                           $releaseState.draft -and `
-                          $releaseState.tag_name -eq $env:RELEASE_TAG
+                          $releaseState.tag_name -eq $env:RELEASE_TAG -and `
+                          $releaseState.body -like "*$releaseMarker*"
 
                       if ($isCreatedDraft) {
                           & gh api `
                               --method DELETE `
-                              "repos/$env:GITHUB_REPOSITORY/releases/$createdReleaseId"
+                              "repos/$env:GITHUB_REPOSITORY/releases/$cleanupReleaseId"
 
                           if ($LASTEXITCODE -eq 0) {
-                              Write-Host "Removed incomplete draft release $createdReleaseId so the workflow can be retried."
+                              Write-Host "Removed incomplete draft release $cleanupReleaseId so the workflow can be retried."
                           }
                           else {
-                              Write-Warning "Could not remove incomplete draft release $createdReleaseId; delete it manually before retrying."
+                              Write-Warning "Could not remove incomplete draft release $cleanupReleaseId; delete it manually before retrying."
                           }
                       }
                   }
