@@ -110,7 +110,7 @@ jobs:
           name: TwitClock-release-assets
           path: release-assets/*.exe
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 14
 
   release:
     name: Sign and publish release
