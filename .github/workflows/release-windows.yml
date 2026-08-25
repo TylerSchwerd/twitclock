@@ -12,19 +12,20 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build, sign, and release
+  build:
+    name: Build and test release assets
     runs-on: windows-latest
+    outputs:
+      release_commit: ${{ steps.release_tag.outputs.commit }}
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-      HAS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 != '' }}
 
     steps:
       - name: Check out release tag
@@ -34,6 +35,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - name: Validate release tag
+        id: release_tag
         shell: pwsh
         run: |
           if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
@@ -45,6 +47,8 @@ jobs:
               throw "The tag $env:RELEASE_TAG does not exist."
           }
 
+          $releaseCommit = (& git rev-parse HEAD).Trim()
+          "commit=$releaseCommit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "RELEASE_VERSION=$($env:RELEASE_TAG.Substring(1))" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Set up .NET 10
@@ -99,6 +103,34 @@ jobs:
 
               Copy-Item "$runtimeDirectory/TwitClock.exe" "$releaseDirectory/TwitClock-$runtime.exe"
           }
+
+      - name: Upload unsigned release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: TwitClock-release-assets
+          path: release-assets/*.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Sign and publish release
+    needs: build
+    runs-on: windows-latest
+    environment:
+      name: windows-code-signing
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_COMMIT: ${{ needs.build.outputs.release_commit }}
+      HAS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 != '' }}
+
+    steps:
+      - name: Download unsigned release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: TwitClock-release-assets
+          path: release-assets
 
       - name: Sign release executables
         if: ${{ env.HAS_SIGNING_CERTIFICATE == 'true' }}
@@ -219,6 +251,31 @@ jobs:
               } |
               Set-Content "release-assets\SHA256SUMS.txt"
 
+      - name: Revalidate release tag target
+        shell: pwsh
+        run: |
+          $tagRef = "refs/tags/$env:RELEASE_TAG"
+          $peeledTagRef = "$tagRef^{}"
+          $remoteLines = @(
+              & git ls-remote `
+                  "https://github.com/$env:GITHUB_REPOSITORY.git" `
+                  $tagRef `
+                  $peeledTagRef
+          )
+
+          if ($LASTEXITCODE -ne 0 -or $remoteLines.Count -eq 0) {
+              throw "Could not resolve the remote tag $env:RELEASE_TAG immediately before release creation."
+          }
+
+          $peeledLine = $remoteLines | Where-Object { $_ -like "*$peeledTagRef" } | Select-Object -First 1
+          $tagLine = $remoteLines | Where-Object { $_ -like "*$tagRef" } | Select-Object -First 1
+          $resolvedLine = if ($null -ne $peeledLine) { $peeledLine } else { $tagLine }
+          $remoteCommit = ($resolvedLine -split '\s+')[0]
+
+          if ($remoteCommit -ne $env:RELEASE_COMMIT) {
+              throw "The tag $env:RELEASE_TAG moved during the build. Expected $env:RELEASE_COMMIT but found $remoteCommit."
+          }
+
       - name: Create GitHub Release
         shell: pwsh
         env:
@@ -232,7 +289,7 @@ jobs:
               "The Windows executables are currently unsigned and may trigger Microsoft Defender SmartScreen."
           }
 
-          $releaseMarker = "<!-- twitclock-release-run:$env:GITHUB_RUN_ID:$env:GITHUB_RUN_ATTEMPT -->"
+          $releaseMarker = "<!-- twitclock-release-workflow:$env:GITHUB_REPOSITORY:$env:RELEASE_TAG -->"
 
           @"
           Self-contained TwitClock executables for Windows 10 and Windows 11. A separate .NET installation is not required.
@@ -361,5 +418,11 @@ jobs:
               }
           }
 
-          $releaseUrl = & gh release view $env:RELEASE_TAG --json url --jq .url --repo $env:GITHUB_REPOSITORY
+          $releaseUrl = & gh release view $env:RELEASE_TAG --json url --jq .url --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($releaseUrl)) {
+              Write-Warning "The release was published, but its URL could not be retrieved for the job summary."
+              $releaseUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:RELEASE_TAG"
+          }
+
           "Release: $releaseUrl" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          exit 0

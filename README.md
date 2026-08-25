@@ -70,11 +70,11 @@ git push origin v1.0.0
 
 The workflow rebuilds and tests the tagged commit, publishes all three Windows executables, optionally signs them, creates SHA-256 checksums, and stages everything in a draft before publishing the GitHub Release. An existing semantic-version tag that does not yet have a Release can be published from **Actions → Release Windows executables → Run workflow**.
 
-Published releases are immutable: the workflow will not replace their downloads. If a release needs a correction, commit the fix and create a new patch-version tag such as `v1.0.1`.
+This workflow treats published releases as immutable and will not replace their downloads. If a release needs a correction, commit the fix and create a new patch-version tag such as `v1.0.1`. Repository administrators can additionally enable GitHub's release-immutability setting to prevent manual changes through the website or API.
 
 ### Configure code signing
 
-Obtain a trusted Windows code-signing certificate as a password-protected PFX file. In the repository, open **Settings → Secrets and variables → Actions** and create these repository secrets:
+Obtain a trusted Windows code-signing certificate as a password-protected PFX file. In the repository, create an Actions environment named `windows-code-signing`, configure required reviewers for it, and create these **environment secrets**:
 
 - `WINDOWS_SIGNING_CERTIFICATE_BASE64`: Base64-encoded contents of the PFX file
 - `WINDOWS_SIGNING_CERTIFICATE_PASSWORD`: the PFX password
@@ -85,7 +85,7 @@ On Windows, copy the Base64 value to the clipboard without exposing the certific
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\path\TwitClock-signing.pfx")) | Set-Clipboard
 ```
 
-Never commit the PFX file, its password, or its Base64 contents. When the secrets are absent, the workflow publishes an unsigned release and displays a warning.
+The protected environment keeps the signing identity out of the untrusted build job and requires approval before a fresh runner receives it. Never commit the PFX file, its password, or its Base64 contents. When the environment secrets are absent, the workflow publishes an unsigned release and displays a warning.
 
 ## Project layout
 
