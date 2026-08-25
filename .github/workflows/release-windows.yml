@@ -31,7 +31,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - name: Validate release tag
         shell: pwsh
@@ -87,7 +87,8 @@ jobs:
           }
 
           $certificatePath = Join-Path $env:RUNNER_TEMP "TwitClock-signing.pfx"
-          $certificate = $null
+          $importedCertificates = @()
+          $signingCertificate = $null
 
           try {
               [IO.File]::WriteAllBytes(
@@ -96,14 +97,46 @@ jobs:
               )
 
               $password = ConvertTo-SecureString $env:SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
-              $certificate = Import-PfxCertificate `
-                  -FilePath $certificatePath `
-                  -CertStoreLocation Cert:\CurrentUser\My `
-                  -Password $password
+              $importedCertificates = @(
+                  Import-PfxCertificate `
+                      -FilePath $certificatePath `
+                      -CertStoreLocation Cert:\CurrentUser\My `
+                      -Password $password
+              )
 
-              if ($null -eq $certificate -or -not $certificate.HasPrivateKey) {
-                  throw "The configured PFX did not provide a certificate with a private key."
+              $codeSigningOid = "1.3.6.1.5.5.7.3.3"
+              $signingCandidates = [System.Collections.Generic.List[System.Security.Cryptography.X509Certificates.X509Certificate2]]::new()
+
+              foreach ($importedCertificate in $importedCertificates) {
+                  if (-not $importedCertificate.HasPrivateKey) {
+                      continue
+                  }
+
+                  foreach ($extension in $importedCertificate.Extensions) {
+                      if ($extension.Oid.Value -ne "2.5.29.37") {
+                          continue
+                      }
+
+                      $enhancedKeyUsage = [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new()
+                      $enhancedKeyUsage.CopyFrom($extension)
+                      $hasCodeSigningUsage = $null -ne (
+                          $enhancedKeyUsage.EnhancedKeyUsages |
+                              Where-Object Value -EQ $codeSigningOid |
+                              Select-Object -First 1
+                      )
+
+                      if ($hasCodeSigningUsage) {
+                          $signingCandidates.Add($importedCertificate)
+                          break
+                      }
+                  }
               }
+
+              if ($signingCandidates.Count -ne 1) {
+                  throw "Expected exactly one private-key code-signing certificate in the PFX, but found $($signingCandidates.Count)."
+              }
+
+              $signingCertificate = $signingCandidates[0]
 
               $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
                   -Filter signtool.exe `
@@ -118,7 +151,7 @@ jobs:
 
               foreach ($executable in Get-ChildItem "release-assets\*.exe") {
                   & $signTool.FullName sign `
-                      /sha1 $certificate.Thumbprint `
+                      /sha1 $signingCertificate.Thumbprint `
                       /fd SHA256 `
                       /tr http://timestamp.digicert.com `
                       /td SHA256 `
@@ -135,8 +168,10 @@ jobs:
               }
           }
           finally {
-              if ($null -ne $certificate) {
-                  Remove-Item "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+              foreach ($importedCertificate in $importedCertificates) {
+                  Remove-Item "Cert:\CurrentUser\My\$($importedCertificate.Thumbprint)" `
+                      -Force `
+                      -ErrorAction SilentlyContinue
               }
 
               Remove-Item $certificatePath -Force -ErrorAction SilentlyContinue
@@ -159,7 +194,7 @@ jobs:
               } |
               Set-Content "release-assets\SHA256SUMS.txt"
 
-      - name: Create or update GitHub Release
+      - name: Create GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -184,29 +219,20 @@ jobs:
           "@ | Set-Content "release-notes.md"
 
           $assets = (Get-ChildItem "release-assets\*").FullName
-          & gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
-
-          if ($LASTEXITCODE -eq 0) {
-              & gh release upload $env:RELEASE_TAG @assets --clobber --repo $env:GITHUB_REPOSITORY
-              if ($LASTEXITCODE -ne 0) {
-                  throw "Uploading the replacement release assets failed."
-              }
-
-              & gh release edit $env:RELEASE_TAG `
-                  --title "TwitClock $env:RELEASE_TAG" `
-                  --notes-file "release-notes.md" `
-                  --repo $env:GITHUB_REPOSITORY
-          }
-          else {
-              & gh release create $env:RELEASE_TAG @assets `
-                  --verify-tag `
-                  --title "TwitClock $env:RELEASE_TAG" `
-                  --notes-file "release-notes.md" `
-                  --repo $env:GITHUB_REPOSITORY
-          }
+          & gh release create $env:RELEASE_TAG @assets `
+              --draft `
+              --verify-tag `
+              --title "TwitClock $env:RELEASE_TAG" `
+              --notes-file "release-notes.md" `
+              --repo $env:GITHUB_REPOSITORY
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Creating or updating the GitHub Release failed."
+              throw "Creating the draft GitHub Release failed. The release may already exist; no existing assets were changed."
+          }
+
+          & gh release edit $env:RELEASE_TAG --draft=false --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) {
+              throw "Publishing the draft GitHub Release failed. The draft was left private for inspection."
           }
 
           $releaseUrl = & gh release view $env:RELEASE_TAG --json url --jq .url --repo $env:GITHUB_REPOSITORY

@@ -68,7 +68,9 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-The workflow rebuilds and tests the tagged commit, publishes all three Windows executables, optionally signs them, creates SHA-256 checksums, and attaches everything to a permanent GitHub Release. An existing tag can also be published again from **Actions → Release Windows executables → Run workflow**.
+The workflow rebuilds and tests the tagged commit, publishes all three Windows executables, optionally signs them, creates SHA-256 checksums, and stages everything in a draft before publishing the GitHub Release. An existing semantic-version tag that does not yet have a Release can be published from **Actions → Release Windows executables → Run workflow**.
+
+Published releases are immutable: the workflow will not replace their downloads. If a release needs a correction, commit the fix and create a new patch-version tag such as `v1.0.1`.
 
 ### Configure code signing
 
