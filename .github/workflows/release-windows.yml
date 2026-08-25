@@ -219,20 +219,79 @@ jobs:
           "@ | Set-Content "release-notes.md"
 
           $assets = (Get-ChildItem "release-assets\*").FullName
-          & gh release create $env:RELEASE_TAG @assets `
-              --draft `
-              --verify-tag `
-              --title "TwitClock $env:RELEASE_TAG" `
-              --notes-file "release-notes.md" `
-              --repo $env:GITHUB_REPOSITORY
+          $createdReleaseId = $null
+          $published = $false
 
-          if ($LASTEXITCODE -ne 0) {
-              throw "Creating the draft GitHub Release failed. The release may already exist; no existing assets were changed."
+          try {
+              & gh release create $env:RELEASE_TAG `
+                  --draft `
+                  --verify-tag `
+                  --title "TwitClock $env:RELEASE_TAG" `
+                  --notes-file "release-notes.md" `
+                  --repo $env:GITHUB_REPOSITORY
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Creating the empty draft GitHub Release failed. The release may already exist; no existing assets were changed."
+              }
+
+              $releaseJson = & gh release view $env:RELEASE_TAG `
+                  --json databaseId,isDraft,tagName `
+                  --repo $env:GITHUB_REPOSITORY
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Reading the newly created draft GitHub Release failed."
+              }
+
+              $createdRelease = $releaseJson | ConvertFrom-Json
+              if (-not $createdRelease.isDraft -or $createdRelease.tagName -ne $env:RELEASE_TAG) {
+                  throw "The newly created release could not be verified as the expected draft."
+              }
+
+              $createdReleaseId = [long]$createdRelease.databaseId
+
+              & gh release upload $env:RELEASE_TAG @assets --repo $env:GITHUB_REPOSITORY
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Uploading assets to the draft GitHub Release failed."
+              }
+
+              & gh release edit $env:RELEASE_TAG --draft=false --repo $env:GITHUB_REPOSITORY
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Publishing the draft GitHub Release failed."
+              }
+
+              $published = $true
           }
+          catch {
+              $releaseFailure = $_
 
-          & gh release edit $env:RELEASE_TAG --draft=false --repo $env:GITHUB_REPOSITORY
-          if ($LASTEXITCODE -ne 0) {
-              throw "Publishing the draft GitHub Release failed. The draft was left private for inspection."
+              if ($null -ne $createdReleaseId -and -not $published) {
+                  $releaseStateJson = & gh api `
+                      "repos/$env:GITHUB_REPOSITORY/releases/$createdReleaseId" `
+                      2>$null
+
+                  if ($LASTEXITCODE -eq 0) {
+                      $releaseState = $releaseStateJson | ConvertFrom-Json
+                      $isCreatedDraft = `
+                          [long]$releaseState.id -eq $createdReleaseId -and `
+                          $releaseState.draft -and `
+                          $releaseState.tag_name -eq $env:RELEASE_TAG
+
+                      if ($isCreatedDraft) {
+                          & gh api `
+                              --method DELETE `
+                              "repos/$env:GITHUB_REPOSITORY/releases/$createdReleaseId"
+
+                          if ($LASTEXITCODE -eq 0) {
+                              Write-Host "Removed incomplete draft release $createdReleaseId so the workflow can be retried."
+                          }
+                          else {
+                              Write-Warning "Could not remove incomplete draft release $createdReleaseId; delete it manually before retrying."
+                          }
+                      }
+                  }
+              }
+
+              throw $releaseFailure
           }
 
           $releaseUrl = & gh release view $env:RELEASE_TAG --json url --jq .url --repo $env:GITHUB_REPOSITORY
