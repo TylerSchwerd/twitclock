@@ -1,0 +1,428 @@
+name: Release Windows executables
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing semantic-version tag to publish, such as v1.0.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and test release assets
+    runs-on: windows-latest
+    outputs:
+      release_commit: ${{ steps.release_tag.outputs.commit }}
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - name: Validate release tag
+        id: release_tag
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+              throw "Release tags must use semantic versioning, for example v1.0.0."
+          }
+
+          & git rev-parse --verify "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) {
+              throw "The tag $env:RELEASE_TAG does not exist."
+          }
+
+          $releaseCommit = (& git rev-parse HEAD).Trim()
+          "commit=$releaseCommit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "RELEASE_VERSION=$($env:RELEASE_TAG.Substring(1))" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore TwitClock.sln
+
+      - name: Build
+        run: dotnet build TwitClock.sln --configuration Release --no-restore
+
+      - name: Run timer logic tests
+        run: dotnet run --project tests/TwitClock.Core.Tests/TwitClock.Core.Tests.csproj --configuration Release --no-build
+
+      - name: Run Windows UI behaviour tests
+        run: dotnet run --project tests/TwitClock.Ui.Tests/TwitClock.Ui.Tests.csproj --configuration Release --no-build
+
+      - name: Publish release executables
+        shell: pwsh
+        run: |
+          $releaseDirectory = Join-Path $PWD "release-assets"
+          New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
+
+          foreach ($runtime in @("win-x64", "win-arm64", "win-x86")) {
+              $runtimeDirectory = Join-Path $PWD "artifacts/$runtime"
+              $publishArguments = @(
+                  "publish"
+                  "src/TwitClock/TwitClock.csproj"
+                  "--configuration"
+                  "Release"
+                  "--runtime"
+                  $runtime
+                  "--self-contained"
+                  "true"
+                  "-p:PublishSingleFile=true"
+                  "-p:IncludeNativeLibrariesForSelfExtract=true"
+                  "-p:DebugType=None"
+                  "-p:DebugSymbols=false"
+                  "-p:Version=$env:RELEASE_VERSION"
+                  "-p:AssemblyVersion=$($env:RELEASE_VERSION).0"
+                  "-p:FileVersion=$($env:RELEASE_VERSION).0"
+                  "--output"
+                  $runtimeDirectory
+              )
+
+              & dotnet @publishArguments
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Publishing TwitClock for $runtime failed with exit code $LASTEXITCODE."
+              }
+
+              Copy-Item "$runtimeDirectory/TwitClock.exe" "$releaseDirectory/TwitClock-$runtime.exe"
+          }
+
+      - name: Upload unsigned release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: TwitClock-release-assets
+          path: release-assets/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Sign and publish release
+    needs: build
+    runs-on: windows-latest
+    environment:
+      name: windows-code-signing
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_COMMIT: ${{ needs.build.outputs.release_commit }}
+      HAS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 != '' }}
+
+    steps:
+      - name: Download unsigned release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: TwitClock-release-assets
+          path: release-assets
+
+      - name: Sign release executables
+        if: ${{ env.HAS_SIGNING_CERTIFICATE == 'true' }}
+        shell: pwsh
+        env:
+          SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PASSWORD)) {
+              throw "WINDOWS_SIGNING_CERTIFICATE_PASSWORD must be configured when a signing certificate is supplied."
+          }
+
+          $certificatePath = Join-Path $env:RUNNER_TEMP "TwitClock-signing.pfx"
+          $importedCertificates = @()
+          $signingCertificate = $null
+
+          try {
+              [IO.File]::WriteAllBytes(
+                  $certificatePath,
+                  [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_BASE64)
+              )
+
+              $password = ConvertTo-SecureString $env:SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
+              $importedCertificates = @(
+                  Import-PfxCertificate `
+                      -FilePath $certificatePath `
+                      -CertStoreLocation Cert:\CurrentUser\My `
+                      -Password $password
+              )
+
+              $codeSigningOid = "1.3.6.1.5.5.7.3.3"
+              $signingCandidates = [System.Collections.Generic.List[System.Security.Cryptography.X509Certificates.X509Certificate2]]::new()
+
+              foreach ($importedCertificate in $importedCertificates) {
+                  if (-not $importedCertificate.HasPrivateKey) {
+                      continue
+                  }
+
+                  foreach ($extension in $importedCertificate.Extensions) {
+                      if ($extension.Oid.Value -ne "2.5.29.37") {
+                          continue
+                      }
+
+                      $enhancedKeyUsage = [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new()
+                      $enhancedKeyUsage.CopyFrom($extension)
+                      $hasCodeSigningUsage = $null -ne (
+                          $enhancedKeyUsage.EnhancedKeyUsages |
+                              Where-Object Value -EQ $codeSigningOid |
+                              Select-Object -First 1
+                      )
+
+                      if ($hasCodeSigningUsage) {
+                          $signingCandidates.Add($importedCertificate)
+                          break
+                      }
+                  }
+              }
+
+              if ($signingCandidates.Count -ne 1) {
+                  throw "Expected exactly one private-key code-signing certificate in the PFX, but found $($signingCandidates.Count)."
+              }
+
+              $signingCertificate = $signingCandidates[0]
+
+              $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+                  -Filter signtool.exe `
+                  -Recurse |
+                  Where-Object FullName -Match '\\x64\\signtool\.exe$' |
+                  Sort-Object FullName -Descending |
+                  Select-Object -First 1
+
+              if ($null -eq $signTool) {
+                  throw "SignTool was not found on the Windows runner."
+              }
+
+              foreach ($executable in Get-ChildItem "release-assets\*.exe") {
+                  & $signTool.FullName sign `
+                      /sha1 $signingCertificate.Thumbprint `
+                      /fd SHA256 `
+                      /tr http://timestamp.digicert.com `
+                      /td SHA256 `
+                      $executable.FullName
+
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "Signing failed for $($executable.Name)."
+                  }
+
+                  $signature = Get-AuthenticodeSignature $executable.FullName
+                  if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+                      throw "Signature verification failed for $($executable.Name): $($signature.StatusMessage)"
+                  }
+              }
+          }
+          finally {
+              foreach ($importedCertificate in $importedCertificates) {
+                  Remove-Item "Cert:\CurrentUser\My\$($importedCertificate.Thumbprint)" `
+                      -Force `
+                      -ErrorAction SilentlyContinue
+              }
+
+              Remove-Item $certificatePath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Warn when release is unsigned
+        if: ${{ env.HAS_SIGNING_CERTIFICATE != 'true' }}
+        shell: pwsh
+        run: |
+          Write-Output "::warning::No Windows signing certificate is configured. Release executables will be unsigned."
+
+      - name: Create SHA-256 checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem "release-assets\*.exe" |
+              Sort-Object Name |
+              ForEach-Object {
+                  $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                  "$hash *$($_.Name)"
+              } |
+              Set-Content "release-assets\SHA256SUMS.txt"
+
+      - name: Revalidate release tag target
+        shell: pwsh
+        run: |
+          $tagRef = "refs/tags/$env:RELEASE_TAG"
+          $peeledTagRef = "$tagRef^{}"
+          $remoteLines = @(
+              & git ls-remote `
+                  "https://github.com/$env:GITHUB_REPOSITORY.git" `
+                  $tagRef `
+                  $peeledTagRef
+          )
+
+          if ($LASTEXITCODE -ne 0 -or $remoteLines.Count -eq 0) {
+              throw "Could not resolve the remote tag $env:RELEASE_TAG immediately before release creation."
+          }
+
+          $peeledLine = $remoteLines | Where-Object { $_ -like "*$peeledTagRef" } | Select-Object -First 1
+          $tagLine = $remoteLines | Where-Object { $_ -like "*$tagRef" } | Select-Object -First 1
+          $resolvedLine = if ($null -ne $peeledLine) { $peeledLine } else { $tagLine }
+          $remoteCommit = ($resolvedLine -split '\s+')[0]
+
+          if ($remoteCommit -ne $env:RELEASE_COMMIT) {
+              throw "The tag $env:RELEASE_TAG moved during the build. Expected $env:RELEASE_COMMIT but found $remoteCommit."
+          }
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $signed = $env:HAS_SIGNING_CERTIFICATE -eq 'true'
+          $signatureNote = if ($signed) {
+              "The Windows executables are Authenticode signed and timestamped."
+          }
+          else {
+              "The Windows executables are currently unsigned and may trigger Microsoft Defender SmartScreen."
+          }
+
+          $releaseMarker = "<!-- twitclock-release-workflow:$env:GITHUB_REPOSITORY:$env:RELEASE_TAG -->"
+
+          @"
+          Self-contained TwitClock executables for Windows 10 and Windows 11. A separate .NET installation is not required.
+
+          - ``TwitClock-win-x64.exe``: most Intel and AMD computers
+          - ``TwitClock-win-arm64.exe``: ARM-based Windows computers
+          - ``TwitClock-win-x86.exe``: 32-bit Windows computers
+          - ``SHA256SUMS.txt``: SHA-256 checksums for verifying downloads
+
+          $signatureNote
+
+          $releaseMarker
+          "@ | Set-Content "release-notes.md"
+
+          $assets = (Get-ChildItem "release-assets\*").FullName
+          $createdReleaseId = $null
+          $published = $false
+
+          try {
+              & gh release create $env:RELEASE_TAG `
+                  --draft `
+                  --verify-tag `
+                  --title "TwitClock $env:RELEASE_TAG" `
+                  --notes-file "release-notes.md" `
+                  --repo $env:GITHUB_REPOSITORY
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Creating the empty draft GitHub Release failed. The release may already exist; no existing assets were changed."
+              }
+
+              $releaseJson = & gh release view $env:RELEASE_TAG `
+                  --json databaseId,isDraft,tagName `
+                  --repo $env:GITHUB_REPOSITORY
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Reading the newly created draft GitHub Release failed."
+              }
+
+              $createdRelease = $releaseJson | ConvertFrom-Json
+              if (-not $createdRelease.isDraft -or $createdRelease.tagName -ne $env:RELEASE_TAG) {
+                  throw "The newly created release could not be verified as the expected draft."
+              }
+
+              $createdReleaseId = [long]$createdRelease.databaseId
+
+              & gh release upload $env:RELEASE_TAG @assets --repo $env:GITHUB_REPOSITORY
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Uploading assets to the draft GitHub Release failed."
+              }
+
+              & gh release edit $env:RELEASE_TAG --draft=false --repo $env:GITHUB_REPOSITORY
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Publishing the draft GitHub Release failed."
+              }
+
+              $published = $true
+          }
+          catch {
+              $releaseFailure = $_
+              $cleanupReleaseId = $createdReleaseId
+              $publicationRecovered = $false
+
+              if ($null -eq $cleanupReleaseId) {
+                  $releasePagesJson = & gh api `
+                      --paginate `
+                      --slurp `
+                      "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" `
+                      2>$null
+
+                  if ($LASTEXITCODE -eq 0) {
+                      $releasePages = $releasePagesJson | ConvertFrom-Json
+                      $matchingDrafts = @(
+                          foreach ($page in $releasePages) {
+                              foreach ($release in $page) {
+                                  if (
+                                      $release.draft -and `
+                                      $release.tag_name -eq $env:RELEASE_TAG -and `
+                                      $release.body -like "*$releaseMarker*"
+                                  ) {
+                                      $release
+                                  }
+                              }
+                          }
+                      )
+
+                      if ($matchingDrafts.Count -eq 1) {
+                          $cleanupReleaseId = [long]$matchingDrafts[0].id
+                      }
+                  }
+              }
+
+              if ($null -ne $cleanupReleaseId -and -not $published) {
+                  $releaseStateJson = & gh api `
+                      "repos/$env:GITHUB_REPOSITORY/releases/$cleanupReleaseId" `
+                      2>$null
+
+                  if ($LASTEXITCODE -eq 0) {
+                      $releaseState = $releaseStateJson | ConvertFrom-Json
+                      $isMatchingRelease = `
+                          [long]$releaseState.id -eq $cleanupReleaseId -and `
+                          $releaseState.tag_name -eq $env:RELEASE_TAG -and `
+                          $releaseState.body -like "*$releaseMarker*"
+
+                      if ($isMatchingRelease -and -not $releaseState.draft) {
+                          $published = $true
+                          $publicationRecovered = $true
+                          Write-Host "Release $cleanupReleaseId was published successfully despite the client error."
+                      }
+                      elseif ($isMatchingRelease -and $releaseState.draft) {
+                          & gh api `
+                              --method DELETE `
+                              "repos/$env:GITHUB_REPOSITORY/releases/$cleanupReleaseId"
+
+                          if ($LASTEXITCODE -eq 0) {
+                              Write-Host "Removed incomplete draft release $cleanupReleaseId so the workflow can be retried."
+                          }
+                          else {
+                              Write-Warning "Could not remove incomplete draft release $cleanupReleaseId; delete it manually before retrying."
+                          }
+                      }
+                  }
+              }
+
+              if (-not $publicationRecovered) {
+                  throw $releaseFailure
+              }
+          }
+
+          $releaseUrl = & gh release view $env:RELEASE_TAG --json url --jq .url --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($releaseUrl)) {
+              Write-Warning "The release was published, but its URL could not be retrieved for the job summary."
+              $releaseUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:RELEASE_TAG"
+          }
+
+          "Release: $releaseUrl" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          exit 0

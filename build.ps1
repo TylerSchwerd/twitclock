@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
     [ValidateSet("win-x64", "win-arm64", "win-x86")]
-    [string]$RuntimeIdentifier = "win-x64"
+    [string]$RuntimeIdentifier = "win-x64",
+
+    [ValidatePattern("^\d+\.\d+\.\d+$")]
+    [string]$Version
 )
 
 Set-StrictMode -Version Latest
@@ -26,6 +29,14 @@ $publishArguments = @(
     "--output"
     $output
 )
+
+if ($Version) {
+    $publishArguments += @(
+        "-p:Version=$Version"
+        "-p:AssemblyVersion=$($Version).0"
+        "-p:FileVersion=$($Version).0"
+    )
+}
 
 & dotnet @publishArguments
 
