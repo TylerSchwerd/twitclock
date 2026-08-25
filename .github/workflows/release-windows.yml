@@ -293,6 +293,7 @@ jobs:
           catch {
               $releaseFailure = $_
               $cleanupReleaseId = $createdReleaseId
+              $publicationRecovered = $false
 
               if ($null -eq $cleanupReleaseId) {
                   $releasePagesJson = & gh api `
@@ -330,13 +331,17 @@ jobs:
 
                   if ($LASTEXITCODE -eq 0) {
                       $releaseState = $releaseStateJson | ConvertFrom-Json
-                      $isCreatedDraft = `
+                      $isMatchingRelease = `
                           [long]$releaseState.id -eq $cleanupReleaseId -and `
-                          $releaseState.draft -and `
                           $releaseState.tag_name -eq $env:RELEASE_TAG -and `
                           $releaseState.body -like "*$releaseMarker*"
 
-                      if ($isCreatedDraft) {
+                      if ($isMatchingRelease -and -not $releaseState.draft) {
+                          $published = $true
+                          $publicationRecovered = $true
+                          Write-Host "Release $cleanupReleaseId was published successfully despite the client error."
+                      }
+                      elseif ($isMatchingRelease -and $releaseState.draft) {
                           & gh api `
                               --method DELETE `
                               "repos/$env:GITHUB_REPOSITORY/releases/$cleanupReleaseId"
@@ -351,7 +356,9 @@ jobs:
                   }
               }
 
-              throw $releaseFailure
+              if (-not $publicationRecovered) {
+                  throw $releaseFailure
+              }
           }
 
           $releaseUrl = & gh release view $env:RELEASE_TAG --json url --jq .url --repo $env:GITHUB_REPOSITORY
