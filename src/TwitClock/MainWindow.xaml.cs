@@ -3,7 +3,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using TwitClock.Core;
 
@@ -11,13 +10,10 @@ namespace TwitClock;
 
 public partial class MainWindow : Window
 {
-    private static readonly Color ContentGreen = Color.FromRgb(33, 196, 94);
-    private static readonly Color AdBreakRed = Color.FromRgb(240, 69, 69);
-
     private readonly Stopwatch _stopwatch;
     private readonly PhaseClock _clock;
     private readonly DispatcherTimer _timer;
-    private ClockPhase? _displayedPhase;
+    private readonly PhaseBackgroundController _backgroundController;
 
     public MainWindow()
     {
@@ -25,6 +21,7 @@ public partial class MainWindow : Window
 
         _stopwatch = Stopwatch.StartNew();
         _clock = new PhaseClock(_stopwatch.Elapsed);
+        _backgroundController = new PhaseBackgroundController(RootBorder);
         _timer = new DispatcherTimer(DispatcherPriority.Normal)
         {
             Interval = TimeSpan.FromMilliseconds(200)
@@ -64,41 +61,37 @@ public partial class MainWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        switch (e.Key)
+        e.Handled = ProcessKeyboardInput(e.Key, e.IsRepeat);
+    }
+
+    internal bool ProcessKeyboardInput(Key key, bool isRepeat)
+    {
+        KeyboardInputAction input = KeyboardInput.Resolve(key, isRepeat);
+        if (!input.IsHandled)
         {
-            case Key.Add:
-            case Key.OemPlus:
-            case Key.Up:
+            return false;
+        }
+
+        switch (input.Command)
+        {
+            case ClockCommand.AddMinute:
                 AdjustByOneMinute(1);
-                e.Handled = true;
                 break;
 
-            case Key.Subtract:
-            case Key.OemMinus:
-            case Key.Down:
+            case ClockCommand.SubtractMinute:
                 AdjustByOneMinute(-1);
-                e.Handled = true;
                 break;
 
-            case Key.Left:
-            case Key.Right:
-                if (!e.IsRepeat)
-                {
-                    SwitchPhase();
-                }
-
-                e.Handled = true;
+            case ClockCommand.SwitchPhase:
+                SwitchPhase();
                 break;
 
-            case Key.X:
-                if (!e.IsRepeat)
-                {
-                    Close();
-                }
-
-                e.Handled = true;
+            case ClockCommand.Close:
+                Close();
                 break;
         }
+
+        return true;
     }
 
     private void SwitchPhase_Click(object sender, RoutedEventArgs e)
@@ -142,48 +135,12 @@ public partial class MainWindow : Window
 
         TimeText.Text = $"{minutes:00}:{seconds:00}";
         PhaseText.Text = _clock.Phase == ClockPhase.Content ? "CONTENT" : "AD BREAK";
-
-        bool animateBackground = _displayedPhase.HasValue && _displayedPhase.Value != _clock.Phase;
-        if (!_displayedPhase.HasValue || animateBackground)
-        {
-            Color phaseColor = _clock.Phase == ClockPhase.Content ? ContentGreen : AdBreakRed;
-            SetBackground(phaseColor, animateBackground);
-        }
-
-        _displayedPhase = _clock.Phase;
+        _backgroundController.Update(_clock.Phase);
     }
 
-    private void SetBackground(Color color, bool animate)
-    {
-        if (RootBorder.Background is not SolidColorBrush currentBrush)
-        {
-            RootBorder.Background = new SolidColorBrush(color);
-            return;
-        }
+    internal ClockPhase CurrentPhase => _clock.Phase;
 
-        SolidColorBrush brush = currentBrush;
-        if (brush.IsFrozen)
-        {
-            brush = currentBrush.CloneCurrentValue();
-            RootBorder.Background = brush;
-        }
-
-        if (!animate)
-        {
-            brush.BeginAnimation(SolidColorBrush.ColorProperty, null);
-            brush.Color = color;
-            return;
-        }
-
-        ColorAnimation animation = new()
-        {
-            To = color,
-            Duration = TimeSpan.FromMilliseconds(500),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
-        };
-
-        brush.BeginAnimation(SolidColorBrush.ColorProperty, animation, HandoffBehavior.SnapshotAndReplace);
-    }
+    internal int RemainingSeconds => _clock.GetRemainingSeconds(_stopwatch.Elapsed);
 
     protected override void OnClosed(EventArgs e)
     {
