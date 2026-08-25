@@ -8,6 +8,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TwitClock", "src\TwitClock\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TwitClock.Core.Tests", "tests\TwitClock.Core.Tests\TwitClock.Core.Tests.csproj", "{6730B8A3-F1AB-4A26-9729-2B5603C0BA70}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TwitClock.Ui.Tests", "tests\TwitClock.Ui.Tests\TwitClock.Ui.Tests.csproj", "{F64DD67E-84DD-4898-B826-F75A90D8CF61}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,6 +28,10 @@ Global
 		{6730B8A3-F1AB-4A26-9729-2B5603C0BA70}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{6730B8A3-F1AB-4A26-9729-2B5603C0BA70}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{6730B8A3-F1AB-4A26-9729-2B5603C0BA70}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F64DD67E-84DD-4898-B826-F75A90D8CF61}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F64DD67E-84DD-4898-B826-F75A90D8CF61}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F64DD67E-84DD-4898-B826-F75A90D8CF61}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F64DD67E-84DD-4898-B826-F75A90D8CF61}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -46,6 +46,7 @@ Install the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) on Wi
 ```powershell
 dotnet build TwitClock.sln --configuration Release
 dotnet run --project tests\TwitClock.Core.Tests\TwitClock.Core.Tests.csproj --configuration Release
+dotnet run --project tests\TwitClock.Ui.Tests\TwitClock.Ui.Tests.csproj --configuration Release
 dotnet run --project src\TwitClock\TwitClock.csproj --configuration Release
 ```
 
@@ -64,6 +65,7 @@ Valid runtime identifiers are `win-x64`, `win-arm64`, and `win-x86`. The finishe
 | `src/TwitClock` | WPF user interface and Windows application manifest |
 | `src/TwitClock.Core` | Platform-independent timer and phase logic |
 | `tests/TwitClock.Core.Tests` | Dependency-free executable test harness |
+| `tests/TwitClock.Ui.Tests` | Windows-only keyboard and background-animation behaviour tests |
 | `build.ps1` | Local self-contained publishing script |
 | `.github/workflows/build-windows.yml` | Automated Windows build, test, and artifact publishing |
 
