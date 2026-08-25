@@ -1,0 +1,213 @@
+name: Release Windows executables
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing semantic-version tag to publish, such as v1.0.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, sign, and release
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      HAS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 != '' }}
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+              throw "Release tags must use semantic versioning, for example v1.0.0."
+          }
+
+          & git rev-parse --verify "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) {
+              throw "The tag $env:RELEASE_TAG does not exist."
+          }
+
+          "RELEASE_VERSION=$($env:RELEASE_TAG.Substring(1))" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore TwitClock.sln
+
+      - name: Build
+        run: dotnet build TwitClock.sln --configuration Release --no-restore
+
+      - name: Run timer logic tests
+        run: dotnet run --project tests/TwitClock.Core.Tests/TwitClock.Core.Tests.csproj --configuration Release --no-build
+
+      - name: Run Windows UI behaviour tests
+        run: dotnet run --project tests/TwitClock.Ui.Tests/TwitClock.Ui.Tests.csproj --configuration Release --no-build
+
+      - name: Publish release executables
+        shell: pwsh
+        run: |
+          $releaseDirectory = Join-Path $PWD "release-assets"
+          New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
+
+          foreach ($runtime in @("win-x64", "win-arm64", "win-x86")) {
+              ./build.ps1 -RuntimeIdentifier $runtime -Version $env:RELEASE_VERSION
+              Copy-Item "artifacts/$runtime/TwitClock.exe" "$releaseDirectory/TwitClock-$runtime.exe"
+          }
+
+      - name: Sign release executables
+        if: ${{ env.HAS_SIGNING_CERTIFICATE == 'true' }}
+        shell: pwsh
+        env:
+          SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PASSWORD)) {
+              throw "WINDOWS_SIGNING_CERTIFICATE_PASSWORD must be configured when a signing certificate is supplied."
+          }
+
+          $certificatePath = Join-Path $env:RUNNER_TEMP "TwitClock-signing.pfx"
+          $certificate = $null
+
+          try {
+              [IO.File]::WriteAllBytes(
+                  $certificatePath,
+                  [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_BASE64)
+              )
+
+              $password = ConvertTo-SecureString $env:SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
+              $certificate = Import-PfxCertificate `
+                  -FilePath $certificatePath `
+                  -CertStoreLocation Cert:\CurrentUser\My `
+                  -Password $password
+
+              if ($null -eq $certificate -or -not $certificate.HasPrivateKey) {
+                  throw "The configured PFX did not provide a certificate with a private key."
+              }
+
+              $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+                  -Filter signtool.exe `
+                  -Recurse |
+                  Where-Object FullName -Match '\\x64\\signtool\.exe$' |
+                  Sort-Object FullName -Descending |
+                  Select-Object -First 1
+
+              if ($null -eq $signTool) {
+                  throw "SignTool was not found on the Windows runner."
+              }
+
+              foreach ($executable in Get-ChildItem "release-assets\*.exe") {
+                  & $signTool.FullName sign `
+                      /sha1 $certificate.Thumbprint `
+                      /fd SHA256 `
+                      /tr http://timestamp.digicert.com `
+                      /td SHA256 `
+                      $executable.FullName
+
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "Signing failed for $($executable.Name)."
+                  }
+
+                  $signature = Get-AuthenticodeSignature $executable.FullName
+                  if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+                      throw "Signature verification failed for $($executable.Name): $($signature.StatusMessage)"
+                  }
+              }
+          }
+          finally {
+              if ($null -ne $certificate) {
+                  Remove-Item "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+              }
+
+              Remove-Item $certificatePath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Warn when release is unsigned
+        if: ${{ env.HAS_SIGNING_CERTIFICATE != 'true' }}
+        shell: pwsh
+        run: |
+          Write-Output "::warning::No Windows signing certificate is configured. Release executables will be unsigned."
+
+      - name: Create SHA-256 checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem "release-assets\*.exe" |
+              Sort-Object Name |
+              ForEach-Object {
+                  $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                  "$hash *$($_.Name)"
+              } |
+              Set-Content "release-assets\SHA256SUMS.txt"
+
+      - name: Create or update GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $signed = $env:HAS_SIGNING_CERTIFICATE -eq 'true'
+          $signatureNote = if ($signed) {
+              "The Windows executables are Authenticode signed and timestamped."
+          }
+          else {
+              "The Windows executables are currently unsigned and may trigger Microsoft Defender SmartScreen."
+          }
+
+          @"
+          Self-contained TwitClock executables for Windows 10 and Windows 11. A separate .NET installation is not required.
+
+          - ``TwitClock-win-x64.exe``: most Intel and AMD computers
+          - ``TwitClock-win-arm64.exe``: ARM-based Windows computers
+          - ``TwitClock-win-x86.exe``: 32-bit Windows computers
+          - ``SHA256SUMS.txt``: SHA-256 checksums for verifying downloads
+
+          $signatureNote
+          "@ | Set-Content "release-notes.md"
+
+          $assets = (Get-ChildItem "release-assets\*").FullName
+          & gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
+
+          if ($LASTEXITCODE -eq 0) {
+              & gh release upload $env:RELEASE_TAG @assets --clobber --repo $env:GITHUB_REPOSITORY
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Uploading the replacement release assets failed."
+              }
+
+              & gh release edit $env:RELEASE_TAG `
+                  --title "TwitClock $env:RELEASE_TAG" `
+                  --notes-file "release-notes.md" `
+                  --repo $env:GITHUB_REPOSITORY
+          }
+          else {
+              & gh release create $env:RELEASE_TAG @assets `
+                  --verify-tag `
+                  --title "TwitClock $env:RELEASE_TAG" `
+                  --notes-file "release-notes.md" `
+                  --repo $env:GITHUB_REPOSITORY
+          }
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Creating or updating the GitHub Release failed."
+          }
+
+          $releaseUrl = & gh release view $env:RELEASE_TAG --json url --jq .url --repo $env:GITHUB_REPOSITORY
+          "Release: $releaseUrl" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
